@@ -1,5 +1,287 @@
 ---
-title: "EV Power Dashboard"
+title: "Electric Vehicle & Clean Energy Dashboard"
 format: dashboard
 ---
 
+```{r}
+#| include: false
+library(tidyverse)
+library(maps)
+library(viridis)
+library(plotly)
+
+clean_renewable_value <- function(x) {
+  x %>%
+    str_remove_all("≈|~|about|est\\.|per MMBtu|USD|\\$|#|MMBtu|kWh|EVs") %>%
+    str_trim() %>%
+    as.numeric()
+}
+
+renew_2021 <- read_csv("data/renew-use-2021.csv", show_col_types = FALSE)
+renew_2022 <- read_csv("data/renew-use-2022.csv", show_col_types = FALSE)
+renew_2023 <- read_csv("data/renew-use-2023.csv", show_col_types = FALSE)
+
+total_2021 <- read_csv("data/total-use-2021.csv", show_col_types = FALSE)
+total_2022 <- read_csv("data/total-use-2022.csv", show_col_types = FALSE)
+total_2023 <- read_csv("data/total-use-2023.csv", show_col_types = FALSE)
+
+energy_price_raw <- read_lines("data/av-energy-price-2021-2023.csv")
+price_data <- energy_price_raw[4:length(energy_price_raw)]
+price_data <- str_remove_all(price_data, '"')
+energy_price <- read_csv(I(paste(c("State,2021,2022,2023", price_data), collapse = "\n")),
+                         show_col_types = FALSE)
+
+ev_reg_raw <- read_lines("data/ev-registrations-by-state-2023.csv")
+ev_data <- ev_reg_raw[3:length(ev_reg_raw)]
+ev_registrations <- read_csv(I(paste(c("STATE,Count", ev_data), collapse = "\n")),
+                             show_col_types = FALSE)
+
+renew_2021_clean <- renew_2021 %>%
+  rename(state = 1, source = 2, raw_value = 3) %>%
+  mutate(value = clean_renewable_value(raw_value), year = 2021) %>%
+  select(state, source, value, year)
+
+renew_2022_clean <- renew_2022 %>%
+  rename(state = 1, source = 2, raw_value = 3) %>%
+  mutate(value = clean_renewable_value(raw_value), year = 2022) %>%
+  select(state, source, value, year)
+
+renew_2023_clean <- renew_2023 %>%
+  rename(state = 1, source = 2, raw_value = 3) %>%
+  mutate(value = clean_renewable_value(raw_value), year = 2023) %>%
+  select(state, source, value, year)
+
+renewable_all <- bind_rows(renew_2021_clean, renew_2022_clean, renew_2023_clean)
+
+total_energy_2021 <- total_2021 %>%
+  pivot_longer(cols = -1, names_to = "state", values_to = "value") %>%
+  group_by(state) %>%
+  summarize(total_energy = sum(value, na.rm = TRUE), .groups = "drop") %>%
+  mutate(year = 2021)
+
+total_energy_2022 <- total_2022 %>%
+  pivot_longer(cols = -1, names_to = "state", values_to = "value") %>%
+  group_by(state) %>%
+  summarize(total_energy = sum(value, na.rm = TRUE), .groups = "drop") %>%
+  mutate(year = 2022)
+
+total_energy_2023 <- total_2023 %>%
+  pivot_longer(cols = -1, names_to = "state", values_to = "value") %>%
+  group_by(state) %>%
+  summarize(total_energy = sum(value, na.rm = TRUE), .groups = "drop") %>%
+  mutate(year = 2023)
+
+total_energy_all <- bind_rows(total_energy_2021, total_energy_2022, total_energy_2023)
+
+renewable_by_state <- renewable_all %>%
+  group_by(state, year) %>%
+  summarize(total_renewable = sum(value, na.rm = TRUE), .groups = "drop")
+
+energy_combined <- total_energy_all %>%
+  left_join(renewable_by_state, by = c("state", "year")) %>%
+  mutate(renewable_pct = (total_renewable / total_energy) * 100)
+
+state_name_to_abbr <- data.frame(
+  state_name = state.name,
+  state_abbr = state.abb,
+  stringsAsFactors = FALSE
+)
+
+ev_clean <- ev_registrations %>%
+  rename(state_name = STATE) %>%
+  mutate(ev_count = clean_renewable_value(Count),
+         state_name = str_trim(state_name)) %>%
+  left_join(state_name_to_abbr, by = "state_name") %>%
+  mutate(state = ifelse(is.na(state_abbr), state_name, state_abbr)) %>%
+  select(state, ev_count)
+
+energy_2023 <- energy_combined %>%
+  filter(year == 2023) %>%
+  left_join(ev_clean, by = "state")
+
+state_map <- map_data("state")
+state_name_mapping <- tibble(
+  state_abbr = state.abb,
+  state_full = tolower(state.name)
+)
+
+energy_2023_with_full <- energy_2023 %>%
+  left_join(state_name_mapping, by = c("state" = "state_abbr"))
+
+map_data_final <- state_map %>%
+  left_join(energy_2023_with_full, by = c("region" = "state_full"))
+
+top_renewable <- energy_2023 %>%
+  filter(!is.na(renewable_pct), state != "US") %>%
+  arrange(desc(renewable_pct)) %>%
+  head(10)
+
+top_ev <- energy_2023 %>%
+  filter(!is.na(ev_count), state != "US") %>%
+  arrange(desc(ev_count)) %>%
+  head(10)
+```
+
+## Row {height=30%}
+
+### Column {width=33%}
+
+```{r}
+#| content: valuebox
+#| title: "Average Renewable %"
+avg_renewable <- mean(energy_2023$renewable_pct[energy_2023$state != "US"], na.rm = TRUE)
+list(
+  icon = "sun",
+  color = "success",
+  value = paste0(round(avg_renewable, 1), "%")
+)
+```
+
+### Column {width=33%}
+
+```{r}
+#| content: valuebox
+#| title: "Total EV Registrations"
+total_evs <- sum(energy_2023$ev_count, na.rm = TRUE)
+list(
+  icon = "ev-station",
+  color = "primary",
+  value = format(total_evs, big.mark = ",")
+)
+```
+
+### Column {width=34%}
+
+```{r}
+#| content: valuebox
+#| title: "States Analyzed"
+n_states <- sum(!is.na(energy_2023$renewable_pct) & energy_2023$state != "US")
+list(
+  icon = "map",
+  color = "info",
+  value = n_states
+)
+```
+
+## Row {height=70%}
+
+### Column {width=50%}
+
+```{r}
+#| title: "Renewable Energy by State (2023)"
+p1 <- ggplot(map_data_final, aes(x = long, y = lat, group = group, fill = renewable_pct)) +
+  geom_polygon(color = "white", size = 0.1) +
+  coord_fixed(1.3) +
+  scale_fill_viridis(option = "plasma", na.value = "grey90",
+                     name = "Renewable %") +
+  theme_void() +
+  theme(legend.position = "bottom")
+
+ggplotly(p1, tooltip = "fill") %>%
+  layout(dragmode = "pan")
+```
+
+### Column {width=50%}
+
+```{r}
+#| title: "EV Registrations by State (2023)"
+p2 <- ggplot(map_data_final, aes(x = long, y = lat, group = group, fill = ev_count)) +
+  geom_polygon(color = "white", size = 0.1) +
+  coord_fixed(1.3) +
+  scale_fill_viridis(option = "mako", na.value = "grey90",
+                     trans = "log10",
+                     name = "EV Count") +
+  theme_void() +
+  theme(legend.position = "bottom")
+
+ggplotly(p2, tooltip = "fill") %>%
+  layout(dragmode = "pan")
+```
+
+## Row {height=50%}
+
+### Column {width=50%}
+
+```{r}
+#| title: "Top 10 States by Renewable Energy Percentage"
+ggplot(top_renewable, aes(x = reorder(state, renewable_pct), y = renewable_pct)) +
+  geom_col(fill = "#440154") +
+  coord_flip() +
+  theme_minimal() +
+  labs(x = NULL, y = "Renewable Energy %") +
+  theme(axis.text = element_text(size = 10))
+```
+
+### Column {width=50%}
+
+```{r}
+#| title: "Top 10 States by EV Registrations"
+ggplot(top_ev, aes(x = reorder(state, ev_count), y = ev_count)) +
+  geom_col(fill = "#35B779") +
+  coord_flip() +
+  scale_y_continuous(labels = scales::comma) +
+  theme_minimal() +
+  labs(x = NULL, y = "EV Count") +
+  theme(axis.text = element_text(size = 10))
+```
+
+## Row {height=50%}
+
+### Column
+
+```{r}
+#| title: "Renewable Energy vs EV Adoption"
+energy_2023_filtered <- energy_2023 %>%
+  filter(!is.na(ev_count), !is.na(renewable_pct), state != "US")
+
+p3 <- ggplot(energy_2023_filtered, aes(x = renewable_pct, y = ev_count,
+                                         text = paste0(state, "<br>Renewable: ",
+                                                      round(renewable_pct, 1), "%<br>EVs: ",
+                                                      format(ev_count, big.mark = ",")))) +
+  geom_point(aes(size = total_energy), alpha = 0.6, color = "#440154") +
+  geom_smooth(method = "lm", se = TRUE, color = "#FDE725") +
+  scale_y_log10(labels = scales::comma) +
+  theme_minimal() +
+  labs(x = "Renewable Energy (%)",
+       y = "EV Registrations (log scale)",
+       size = "Total Energy")
+
+ggplotly(p3, tooltip = "text")
+```
+
+## Row {height=50%}
+
+### Column {width=60%}
+
+```{r}
+#| title: "Renewable Energy Trends (2021-2023)"
+energy_trend <- energy_combined %>%
+  filter(state %in% c("CA", "TX", "NY", "FL", "WA", "OR")) %>%
+  filter(!is.na(renewable_pct))
+
+ggplot(energy_trend, aes(x = year, y = renewable_pct, color = state, group = state)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  scale_color_viridis_d() +
+  theme_minimal() +
+  labs(x = "Year", y = "Renewable Energy %", color = "State") +
+  theme(legend.position = "right")
+```
+
+### Column {width=40%}
+
+```{r}
+#| title: "Renewable Energy Sources (2023)"
+source_totals <- renewable_all %>%
+  filter(year == 2023) %>%
+  group_by(source) %>%
+  summarize(total = sum(value, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(total))
+
+ggplot(source_totals, aes(x = reorder(source, total), y = total)) +
+  geom_col(fill = "#31688E") +
+  coord_flip() +
+  scale_y_continuous(labels = scales::comma) +
+  theme_minimal() +
+  labs(x = NULL, y = "Total Energy Production")
+```

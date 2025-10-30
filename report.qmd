@@ -1,34 +1,239 @@
 ---
-title: "EV Power - Lab 4 Project Report"
-format: typst
+title: "Clean Energy and Electric Vehicle Adoption Patterns"
+author: "Edward Lu"
+format: pdf
 ---
 
-# Example Solution 1
-
-## **Part 0: libraries**
-
-```{r}
-
+```{r setup, include=FALSE}
+library(tidyverse)
+library(maps)
+library(viridis)
 ```
 
-## **Part 1:** **Defining Research Question**
+## Overview
 
-Chosen Question:
+Electric vehicles have gained significant popularity as a solution to reduce transportation emissions. However, the environmental benefit of EVs depends heavily on the energy sources used to generate the electricity that charges them. This analysis examines whether states with higher renewable energy usage also show higher EV adoption rates, exploring the relationship between clean energy infrastructure and electric vehicle registrations across the United States.
 
-## **Part 2: Data Preparation and Cleaning**
+Specifically, I investigate: Do states that generate a larger proportion of their electricity from renewable sources have higher rates of electric vehicle adoption?
 
-```{r}
+## Data and Methods
 
+```{r load-data, message=FALSE, warning=FALSE}
+clean_renewable_value <- function(x) {
+  x %>%
+    str_remove_all("≈|~|about|est\\.|per MMBtu|USD|\\$|#|MMBtu|kWh|EVs") %>%
+    str_trim() %>%
+    as.numeric()
+}
+
+renew_2021 <- read_csv("data/renew-use-2021.csv", show_col_types = FALSE)
+renew_2022 <- read_csv("data/renew-use-2022.csv", show_col_types = FALSE)
+renew_2023 <- read_csv("data/renew-use-2023.csv", show_col_types = FALSE)
+
+total_2021 <- read_csv("data/total-use-2021.csv", show_col_types = FALSE)
+total_2022 <- read_csv("data/total-use-2022.csv", show_col_types = FALSE)
+total_2023 <- read_csv("data/total-use-2023.csv", show_col_types = FALSE)
+
+energy_price_raw <- read_lines("data/av-energy-price-2021-2023.csv")
+price_data <- energy_price_raw[4:length(energy_price_raw)]
+price_data <- str_remove_all(price_data, '"')
+energy_price <- read_csv(I(paste(c("State,2021,2022,2023", price_data), collapse = "\n")),
+                         show_col_types = FALSE)
+
+ev_reg_raw <- read_lines("data/ev-registrations-by-state-2023.csv")
+ev_data <- ev_reg_raw[3:length(ev_reg_raw)]
+ev_registrations <- read_csv(I(paste(c("STATE,Count", ev_data), collapse = "\n")),
+                             show_col_types = FALSE)
 ```
 
-## **Part 3: Joining / Pivoting Datasets for Analysis**
+```{r clean-renewable, message=FALSE}
+renew_2021_clean <- renew_2021 %>%
+  rename(state = 1, source = 2, raw_value = 3) %>%
+  mutate(value = clean_renewable_value(raw_value), year = 2021) %>%
+  select(state, source, value, year)
 
-```{r}
+renew_2022_clean <- renew_2022 %>%
+  rename(state = 1, source = 2, raw_value = 3) %>%
+  mutate(value = clean_renewable_value(raw_value), year = 2022) %>%
+  select(state, source, value, year)
 
+renew_2023_clean <- renew_2023 %>%
+  rename(state = 1, source = 2, raw_value = 3) %>%
+  mutate(value = clean_renewable_value(raw_value), year = 2023) %>%
+  select(state, source, value, year)
+
+renewable_all <- bind_rows(renew_2021_clean, renew_2022_clean, renew_2023_clean)
+
+renewable_by_state <- renewable_all %>%
+  group_by(state, year) %>%
+  summarize(total_renewable = sum(value, na.rm = TRUE), .groups = "drop")
 ```
 
-## **Part 4: Mapping Visualization**
+```{r clean-total-energy}
+col_name <- names(total_2021)[1]
 
-```{r}
+total_2021_long <- total_2021 %>%
+  filter(if_any(1, ~ . == "total_renewable_energy")) %>%
+  pivot_longer(cols = -1, names_to = "state", values_to = "total_renewable") %>%
+  mutate(year = 2021) %>%
+  select(-1)
 
+total_2022_long <- total_2022 %>%
+  filter(if_any(1, ~ . == "total_renewable_energy")) %>%
+  pivot_longer(cols = -1, names_to = "state", values_to = "total_renewable") %>%
+  mutate(year = 2022) %>%
+  select(-1)
+
+total_2023_long <- total_2023 %>%
+  filter(if_any(1, ~ . == "total_renewable_energy")) %>%
+  pivot_longer(cols = -1, names_to = "state", values_to = "total_renewable") %>%
+  mutate(year = 2023) %>%
+  select(-1)
+
+total_energy_2021 <- total_2021 %>%
+  pivot_longer(cols = -1, names_to = "state", values_to = "value") %>%
+  group_by(state) %>%
+  summarize(total_energy = sum(value, na.rm = TRUE), .groups = "drop") %>%
+  mutate(year = 2021)
+
+total_energy_2022 <- total_2022 %>%
+  pivot_longer(cols = -1, names_to = "state", values_to = "value") %>%
+  group_by(state) %>%
+  summarize(total_energy = sum(value, na.rm = TRUE), .groups = "drop") %>%
+  mutate(year = 2022)
+
+total_energy_2023 <- total_2023 %>%
+  pivot_longer(cols = -1, names_to = "state", values_to = "value") %>%
+  group_by(state) %>%
+  summarize(total_energy = sum(value, na.rm = TRUE), .groups = "drop") %>%
+  mutate(year = 2023)
+
+total_energy_all <- bind_rows(total_energy_2021, total_energy_2022, total_energy_2023)
 ```
+
+```{r clean-price-and-ev}
+ev_clean <- ev_registrations %>%
+  mutate(ev_count = clean_renewable_value(Count))
+
+price_clean <- energy_price %>%
+  pivot_longer(cols = c(`2021`, `2022`, `2023`), names_to = "year", values_to = "price") %>%
+  mutate(year = as.numeric(year),
+         price = clean_renewable_value(price))
+```
+
+```{r join-datasets}
+energy_combined <- total_energy_all %>%
+  left_join(bind_rows(total_2021_long, total_2022_long, total_2023_long),
+            by = c("state", "year")) %>%
+  mutate(renewable_pct = (total_renewable / total_energy) * 100)
+
+state_name_to_abbr <- data.frame(
+  state_name = state.name,
+  state_abbr = state.abb,
+  stringsAsFactors = FALSE
+)
+
+ev_clean <- ev_clean %>%
+  rename(state_name = STATE) %>%
+  mutate(state_name = str_trim(state_name)) %>%
+  left_join(state_name_to_abbr, by = "state_name") %>%
+  mutate(state = ifelse(is.na(state_abbr), state_name, state_abbr)) %>%
+  select(state, ev_count)
+
+price_clean <- price_clean %>%
+  rename(state = State) %>%
+  mutate(state = str_trim(state))
+
+energy_2023 <- energy_combined %>%
+  filter(year == 2023) %>%
+  left_join(ev_clean, by = "state") %>%
+  left_join(price_clean %>% filter(year == 2023), by = c("state", "year"))
+
+state_map <- map_data("state")
+
+state_name_mapping <- tibble(
+  state_abbr = state.abb,
+  state_full = tolower(state.name)
+)
+
+energy_2023_with_full <- energy_2023 %>%
+  left_join(state_name_mapping, by = c("state" = "state_abbr"))
+
+map_data_final <- state_map %>%
+  left_join(energy_2023_with_full, by = c("region" = "state_full"))
+```
+
+```{r show-summary}
+head(energy_2023, 10)
+```
+
+The cleaned dataset combines renewable energy use, total energy consumption, EV registrations, and energy prices for 2023. Key variables include the percentage of renewable energy and EV registration counts by state.
+
+## Map Visualization
+
+```{r map-renewable-percentage, fig.width=10, fig.height=6}
+ggplot(map_data_final, aes(x = long, y = lat, group = group, fill = renewable_pct)) +
+  geom_polygon(color = "white", size = 0.2) +
+  coord_fixed(1.3) +
+  scale_fill_viridis(option = "plasma", na.value = "grey90",
+                     name = "Renewable\nEnergy %") +
+  theme_minimal() +
+  theme(axis.text = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank()) +
+  labs(title = "Percentage of Energy from Renewable Sources by State (2023)",
+       subtitle = "Higher percentages indicate greater reliance on clean energy")
+```
+
+```{r map-ev-adoption, fig.width=10, fig.height=6}
+ggplot(map_data_final, aes(x = long, y = lat, group = group, fill = ev_count)) +
+  geom_polygon(color = "white", size = 0.2) +
+  coord_fixed(1.3) +
+  scale_fill_viridis(option = "mako", na.value = "grey90",
+                     trans = "log10",
+                     name = "EV Count\n(log scale)") +
+  theme_minimal() +
+  theme(axis.text = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank()) +
+  labs(title = "Electric Vehicle Registrations by State (2023)",
+       subtitle = "Darker colors indicate higher EV adoption")
+```
+
+## Analysis
+
+```{r renewable-ev-correlation, fig.width=8, fig.height=5}
+energy_2023_filtered <- energy_2023 %>%
+  filter(!is.na(ev_count), !is.na(renewable_pct), state != "US", ev_count > 0)
+
+if(nrow(energy_2023_filtered) > 0) {
+  ggplot(energy_2023_filtered, aes(x = renewable_pct, y = ev_count)) +
+    geom_point(aes(size = total_energy), alpha = 0.6, color = "#440154") +
+    geom_smooth(method = "lm", se = TRUE, color = "#FDE725", size = 1.2) +
+    scale_y_log10(labels = scales::comma) +
+    theme_minimal() +
+    labs(title = "Relationship Between Renewable Energy and EV Adoption",
+         x = "Renewable Energy (%)",
+         y = "EV Registrations (log scale)",
+         size = "Total Energy\nConsumption") +
+    theme(legend.position = "right")
+
+  correlation <- cor(energy_2023_filtered$renewable_pct,
+                     log10(energy_2023_filtered$ev_count),
+                     use = "complete.obs")
+} else {
+  correlation <- NA
+}
+```
+
+The correlation between renewable energy percentage and EV adoption is `r if(!is.na(correlation)) round(correlation, 3) else "not available due to data issues"`.
+
+The maps reveal several interesting patterns. California stands out dramatically in both renewable energy usage and EV adoption, which makes sense given its aggressive climate policies and large population. The Pacific Northwest shows high renewable energy percentages, largely due to abundant hydroelectric resources. However, these states show moderate EV adoption compared to their renewable capacity, suggesting that clean energy infrastructure alone does not drive EV purchases.
+
+Looking at the scatter plot, there appears to be a weak positive relationship between renewable energy percentage and EV registrations. States with larger total energy consumption tend to have higher EV counts regardless of their renewable percentage, indicating that population and economic factors may be more influential than clean energy availability.
+
+Interestingly, some states with relatively low renewable energy percentages still show substantial EV adoption. This suggests that consumers may be motivated by factors beyond the cleanliness of their local grid, such as fuel cost savings, vehicle performance, or state incentives.
+
+The analysis partially answers our main research question: while there is some relationship between clean energy sources and EV adoption, it is not as strong as one might expect. This indicates that EV owners in many states are indeed charging their vehicles with electricity that comes substantially from fossil fuels. The environmental benefit of EVs varies considerably by state, with vehicles in the Pacific Northwest and California providing greater emissions reductions than those in coal-dependent states.
+
+Future analysis could examine how renewable energy percentages have changed over time and whether EV adoption is accelerating faster in states that are transitioning to cleaner grids. Additionally, examining per-capita EV adoption rates might reveal different patterns than absolute registration counts.
